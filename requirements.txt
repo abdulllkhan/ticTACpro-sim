@@ -1,0 +1,17 @@
+# Core dependencies
+torch>=2.0.0
+numpy>=1.24.0
+pygame>=2.5.0
+
+# Visualization and analysis
+matplotlib>=3.7.0
+seaborn>=0.12.0
+tensorboard>=2.13.0
+
+# Utilities
+tqdm>=4.65.0
+pandas>=2.0.0
+
+# Optional: for distributed training on DGX
+# torch.distributed is included in torch
+# horovod>=0.28.0  # Uncomment if using Horovod for multi-GPU training

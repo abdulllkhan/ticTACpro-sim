@@ -1,0 +1,9 @@
+{
+  "allowedCommands": ["*"],
+  "requireApproval": false,
+  "autoApproveTools": true,
+  "hooks": {
+    "pre-commit": null,
+    "post-commit": null
+  }
+}
