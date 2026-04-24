@@ -10,7 +10,7 @@ import argparse
 import torch
 import os
 
-from rl.agent import DQNAgent
+from rl.agent import DQNAgent, GPUDQNAgent
 from gui.game_gui import TicTacProGUI
 from game.tictacpro import Player
 
@@ -46,18 +46,22 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
 
-    # Create agent
-    agent = DQNAgent(
-        use_conv=args.use_conv,
-        device=device
-    )
+    # Detect checkpoint format and load the right agent class
+    ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
+    is_gpu_agent = "policy_net" in ckpt  # GPUDQNAgent uses "policy_net" key
 
-    # Load checkpoint
-    if agent.load(args.checkpoint):
-        print("Agent loaded successfully!")
+    if is_gpu_agent:
+        agent = GPUDQNAgent(device=device, compile_model=False)
+        if not agent.load(args.checkpoint):
+            print("ERROR: Failed to load agent.")
+            return
     else:
-        print("ERROR: Failed to load agent.")
-        return
+        agent = DQNAgent(use_conv=args.use_conv, device=device)
+        if not agent.load(args.checkpoint):
+            print("ERROR: Failed to load agent.")
+            return
+
+    print("Agent loaded successfully!")
 
     # Set agent to evaluation mode (no exploration)
     agent.epsilon = 0.0
