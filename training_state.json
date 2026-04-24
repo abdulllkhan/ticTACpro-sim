@@ -1,0 +1,17 @@
+{
+  "total_episodes": 527360,
+  "gradient_steps": 65408,
+  "buffer_size": 7308051,
+  "epsilon": 0.3748882271129936,
+  "avg_loss": 0.056909764730371536,
+  "red_win_rate": 0.4855,
+  "blue_win_rate": 0.4105,
+  "draw_rate": 0.104,
+  "eps_per_second": 56.33454489728411,
+  "gpu_memory_gb": 0.03185749053955078,
+  "elapsed_hours": 2.0981672500901754,
+  "remaining_hours": 0.001832749777370029,
+  "status": "running",
+  "timestamp": 1776997340.2705474,
+  "last_update": "22:22:20"
+}

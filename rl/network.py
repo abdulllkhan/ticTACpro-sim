@@ -224,6 +224,69 @@ class ConvDQNNetwork(nn.Module):
         return row, col, size
 
 
+class GPUDQNNetwork(nn.Module):
+    """
+    GPU-optimized Dueling DQN for DGX Spark GB10.
+
+    Uses LayerNorm (works at any batch size), orthogonal initialization, and
+    hidden sizes that are multiples of 64 for peak Tensor Core occupancy.
+    Larger capacity than DQNNetwork for sustained multi-hour training runs.
+    """
+
+    def __init__(self, state_size: int = 61, action_size: int = 27,
+                 hidden_sizes: tuple = (1024, 512, 256)):
+        super().__init__()
+        self.state_size = state_size
+        self.action_size = action_size
+
+        self.features = nn.Sequential(
+            nn.Linear(state_size, hidden_sizes[0]),
+            nn.LayerNorm(hidden_sizes[0]),
+            nn.ReLU(),
+            nn.Linear(hidden_sizes[0], hidden_sizes[1]),
+            nn.LayerNorm(hidden_sizes[1]),
+            nn.ReLU(),
+            nn.Linear(hidden_sizes[1], hidden_sizes[2]),
+            nn.LayerNorm(hidden_sizes[2]),
+            nn.ReLU(),
+        )
+
+        self.value_head = nn.Sequential(
+            nn.Linear(hidden_sizes[2], 128),
+            nn.ReLU(),
+            nn.Linear(128, 1),
+        )
+
+        self.advantage_head = nn.Sequential(
+            nn.Linear(hidden_sizes[2], 128),
+            nn.ReLU(),
+            nn.Linear(128, action_size),
+        )
+
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
+                nn.init.zeros_(m.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        features = self.features(x)
+        value = self.value_head(features)
+        advantage = self.advantage_head(features)
+        return value + (advantage - advantage.mean(dim=-1, keepdim=True))
+
+    def get_action_index(self, row: int, col: int, size: int) -> int:
+        return row * 9 + col * 3 + (size - 1)
+
+    def get_action_from_index(self, idx: int) -> tuple:
+        row = idx // 9
+        col = (idx % 9) // 3
+        size = (idx % 3) + 1
+        return row, col, size
+
+
 if __name__ == "__main__":
     # Test the networks
     print("Testing DQN Network...")
@@ -240,6 +303,13 @@ if __name__ == "__main__":
     print(f"Input shape: {dummy_state.shape}")
     print(f"Output shape: {q_values_conv.shape}")
     print(f"Q-values sample: {q_values_conv[0, :5]}")
+
+    print("\nTesting GPU DQN Network...")
+    gpu_net = GPUDQNNetwork()
+    q_values_gpu = gpu_net(dummy_state)
+    print(f"Input shape: {dummy_state.shape}")
+    print(f"Output shape: {q_values_gpu.shape}")
+    print(f"Q-values sample: {q_values_gpu[0, :5]}")
 
     print("\nAction index conversion test:")
     print(f"(0, 0, 1) -> {net.get_action_index(0, 0, 1)}")
