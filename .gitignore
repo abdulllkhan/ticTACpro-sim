@@ -60,3 +60,29 @@ events.out.tfevents.*
 
 # Thumbnails
 ._*
+
+# Claude Code project memory
+.claude/
+
+# LaTeX build artifacts
+*.tex
+*.pdf
+*.aux
+*.out
+*.toc
+*.lof
+*.lot
+*.bbl
+*.blg
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+*.nav
+*.snm
+*.vrb
+
+# Training runtime outputs
+training.log
+training_state.json
+checkpoints_spark/
+logs_spark/
