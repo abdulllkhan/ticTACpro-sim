@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S python3 -u
 """
 train_spark.py — DGX Spark GB10 training entry point for Tic Tac Pro.
 
@@ -135,7 +135,7 @@ def analyze_strategies(agent: GPUDQNAgent, n_games: int = 2000) -> None:
                  (1, 0): "mid-left", (1, 1): "CENTER", (1, 2): "mid-right",
                  (2, 0): "bot-left", (2, 1): "bot-mid", (2, 2): "bot-right"}.get(
                      (r, c), f"({r},{c})")
-        sname = size_name_full = {1: "Small", 2: "Medium", 3: "Large"}[sz]
+        sname = {1: "Small", 2: "Medium", 3: "Large"}[sz]
         print(f"    {rank}. {pname} — {sname} piece  (Q={q:+.4f})")
 
     agent.epsilon = saved_eps
@@ -158,9 +158,16 @@ def parse_args():
                    help="Discount factor (default: 0.99)")
     p.add_argument("--epsilon-start", type=float, default=1.0)
     p.add_argument("--epsilon-end", type=float, default=0.05)
-    p.add_argument("--epsilon-decay", type=float, default=0.999987,
-                   help="Per-gradient-step epsilon decay (default: 0.999987 — "
-                        "decays 1.0→0.05 over ~242k steps at 32 steps/collect)")
+    p.add_argument("--epsilon-decay", type=float, default=None,
+                   help="Per-gradient-step epsilon decay (default: auto-computed "
+                        "from --epsilon-steps or run duration). "
+                        "Ignored when --epsilon-steps is given.")
+    p.add_argument("--epsilon-steps", type=int, default=None,
+                   help="§151: auto-compute epsilon-decay so that epsilon reaches "
+                        "epsilon-end after this many gradient steps. Overrides "
+                        "--epsilon-decay. Typical: for a 2h run at ~8k steps/h, "
+                        "use --epsilon-steps 16000. Calibrates the decay curve to "
+                        "the actual run length instead of the legacy 300k default.")
     p.add_argument("--batch-size", type=int, default=65536,
                    help="Gradient update batch size (default: 65536)")
     p.add_argument("--buffer-size", type=int, default=10_000_000,
@@ -170,7 +177,11 @@ def parse_args():
     p.add_argument("--train-steps", type=int, default=32,
                    help="Gradient steps per collection round (default: 32)")
     p.add_argument("--target-update", type=int, default=5000,
-                   help="Target network sync frequency in gradient steps (default: 5000)")
+                   help="Target network hard-copy frequency in gradient steps (default: 5000; "
+                        "ignored when --tau > 0)")
+    p.add_argument("--tau", type=float, default=0.005,
+                   help="Polyak soft-update coefficient for target network (default: 0.005; "
+                        "0 → hard copy every --target-update steps)")
     p.add_argument("--n-cpu-workers", type=int, default=16,
                    help="Parallel CPU collector processes (default: 16; uses all ARM cores "
                         "while GPU trains — enables pipelined collection+training)")
@@ -191,12 +202,44 @@ def parse_args():
                    help="Checkpoint save interval in seconds (default: 600)")
     p.add_argument("--log-every", type=int, default=60,
                    help="Progress log interval in seconds (default: 60)")
+    p.add_argument("--direct-log", type=str, default=None,
+                   help="§155: Write training log directly to this file (bypasses stdout pipe buffering)")
+    p.add_argument("--random-opp", type=float, default=0.3,
+                   help="Fraction of games where BLUE is a heuristic opponent "
+                        "(reduces self-play overfitting, default: 0.3)")
+    p.add_argument("--reverse-opp", type=float, default=0.0,
+                   help="§168: fraction of games where RED is a heuristic opponent "
+                        "and the DQN plays as BLUE. Trains BLUE against tactical "
+                        "threats, improving BLUE win rate (default: 0.0)")
+    p.add_argument("--heuristic-epsilon", type=float, default=0.1,
+                   help="§177: fraction of heuristic-opponent moves that are random "
+                        "instead of win>block>threat. Prevents DQN-BLUE from "
+                        "overfitting to deterministic RED patterns (default: 0.1)")
+    p.add_argument("--mc-returns", action="store_true",
+                   help="§147: use Monte Carlo returns (done=1 for all transitions; "
+                        "reward=±γ^{T-1-t}).  Bypasses bootstrapping chain for "
+                        "faster reward propagation in short games.")
+    p.add_argument("--beta-steps", type=int, default=None,
+                   help="§151: PER beta annealing steps from beta_start=0.4 to "
+                        "beta_end=1.0. Default: auto-computed as hours × 8000 "
+                        "(empirical GB10 rate ≈ 8000 gradient steps/hour). Set "
+                        "explicitly to override (e.g. --beta-steps 16000 for 2h).")
+    p.add_argument("--bullseye-heuristic", action="store_true", default=False,
+                   help="§336: use BullseyeAgent as heuristic training opponent "
+                        "instead of pick_rollout_move, forcing DQN to learn bullseye defense")
+    p.add_argument("--optimal-heuristic", action="store_true", default=False,
+                   help="§347: use OptimalAgent as heuristic training opponent, "
+                        "teaching DQN-BLUE to counter the anti-diagonal S strategy")
     p.add_argument("--skip-analysis", action="store_true",
                    help="Skip post-training strategy analysis")
     return p.parse_args()
 
 
 def main():
+    # §155: force unbuffered stdout so tee gets data immediately when piped
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+
     args = parse_args()
 
     # ---- Sanity checks ---------------------------------------------------
@@ -230,7 +273,57 @@ def main():
         else f"vectorized ({args.n_envs} envs)"
     )
     print(f"  Mode      : {mode_str}")
+    print(f"  Random opp: {args.random_opp:.0%} heuristic BLUE (§109), {args.reverse_opp:.0%} heuristic RED (§168)")
+    if args.tau > 0:
+        print(f"  Target    : Polyak EMA τ={args.tau} (§146)")
+    else:
+        print(f"  Target    : hard copy every {args.target_update} steps")
+    print(f"  MC returns: {'yes (§147)' if args.mc_returns else 'no (TD)'}")
     print("=" * 72 + "\n")
+
+    # ---- §151/§170: auto-calibrate epsilon, PER beta, and LR schedules -----
+    # §170: Updated throughput estimate — observed ~124k gradient steps/hour
+    # with 16 workers × 32 games × 32 train steps at ~816ms/cycle.
+    # (Old estimate of 8000/h was 15× too slow; caused beta_steps to hit 1.0
+    # after only ~16 minutes, defeating PER for 96% of the run.)
+    _GB10_STEPS_PER_HOUR = 120_000
+    expected_steps = int(args.hours * _GB10_STEPS_PER_HOUR)
+
+    if args.epsilon_steps is not None:
+        # User explicitly specified the schedule length.
+        effective_eps_steps = args.epsilon_steps
+    else:
+        # Default: match epsilon schedule to the run duration.
+        effective_eps_steps = expected_steps
+
+    if effective_eps_steps > 0 and args.epsilon_start > args.epsilon_end:
+        import math
+        computed_decay = math.exp(math.log(args.epsilon_end / args.epsilon_start)
+                                  / effective_eps_steps)
+        # Only override if the user didn't explicitly pass --epsilon-decay.
+        if args.epsilon_decay is None:
+            args.epsilon_decay = computed_decay
+            print(f"  §151 ε-decay: auto-computed {computed_decay:.7f} "
+                  f"(ε: {args.epsilon_start}→{args.epsilon_end} in {effective_eps_steps:,} steps)")
+
+    # §170: beta_steps and lr_steps use the full-run estimate (expected_steps),
+    # NOT effective_eps_steps. Epsilon decays aggressively (e.g. 300k steps);
+    # PER beta and LR should anneal over the entire run to avoid premature saturation
+    # or mid-run LR spikes. Previously beta_steps used stale 8000/h → hit 1.0 in 16 min;
+    # previously LR T_max=300k hardcoded → LR rose from 1e-5 back to ~2e-4 at step 480k.
+    if args.beta_steps is None:
+        args.beta_steps = expected_steps
+        print(f"  §170 β-steps: {args.beta_steps:,} "
+              f"(PER IS weights anneal 0.4→1.0 over full {args.hours:.1f}h run)")
+
+    # LR T_max = expected_steps keeps LR monotonically decaying for the full run
+    lr_steps = expected_steps
+    print(f"  §170 LR-steps: {lr_steps:,} (CosineAnnealingLR T_max ≈ full run, no mid-run LR spike)")
+
+    # §185: fallback — if epsilon_decay was not set by auto-compute or user,
+    # use the legacy default (ε: 1.0→0.05 in ~300k steps).
+    if args.epsilon_decay is None:
+        args.epsilon_decay = 0.9999900
 
     # ---- Agent -----------------------------------------------------------
     device = torch.device("cuda:0")
@@ -241,7 +334,7 @@ def main():
         gamma=args.gamma,
         epsilon_start=args.epsilon_start,
         epsilon_end=args.epsilon_end,
-        epsilon_decay=args.epsilon_decay,  # calibrated for 32 steps/collect, 2.1h
+        epsilon_decay=args.epsilon_decay,
         buffer_size=args.buffer_size,
         batch_size=args.batch_size,
         target_update_freq=args.target_update,
@@ -249,6 +342,10 @@ def main():
         compile_model=not args.no_compile,
         device=device,
         hidden_sizes=tuple(args.hidden),
+        tau=args.tau,
+        beta_steps=args.beta_steps,
+        mc_returns=args.mc_returns,  # §162: static flag avoids CUDA sync in _compute_loss
+        lr_steps=lr_steps,           # §170: LR T_max matches epsilon schedule
     )
 
     # ---- Trainer ---------------------------------------------------------
@@ -263,6 +360,13 @@ def main():
         state_file="training_state.json",
         n_cpu_workers=args.n_cpu_workers,
         games_per_worker=args.games_per_worker,
+        random_opponent_frac=args.random_opp,
+        reverse_opponent_frac=args.reverse_opp,
+        heuristic_epsilon=args.heuristic_epsilon,  # §177
+        mc_returns=args.mc_returns,
+        direct_log_file=args.direct_log,
+        use_bullseye_heuristic=args.bullseye_heuristic,  # §336
+        use_optimal_heuristic=args.optimal_heuristic,   # §347
     )
 
     # ---- Train -----------------------------------------------------------

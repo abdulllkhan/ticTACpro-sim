@@ -155,11 +155,13 @@ class DQNAgent:
         if random.random() < epsilon:
             return random.choice(legal_moves)
 
-        # Greedy action selection
-        state = torch.FloatTensor(game.get_state_tensor()).unsqueeze(0).to(self.device)
+        # Greedy action selection — eval() disables Dropout for deterministic Q-values.
+        state = torch.FloatTensor(game.get_state_tensor_normalized()).unsqueeze(0).to(self.device)
 
+        self.policy_net.eval()
         with torch.no_grad():
             q_values = self.policy_net(state).cpu().numpy()[0]
+        self.policy_net.train()
 
         # Mask illegal actions with very negative values
         action_mask = np.full(self.action_size, -1e9)
@@ -193,10 +195,13 @@ class DQNAgent:
         # Current Q values
         current_q_values = self.policy_net(states).gather(1, actions.unsqueeze(1)).squeeze(1)
 
-        # Next Q values from target network
+        # Double DQN: policy net selects action, target net evaluates it.
+        # §134 negamax: states are normalized to current player's perspective,
+        # so next_q is the *opponent's* value — subtract (not add) for zero-sum.
         with torch.no_grad():
-            next_q_values = self.target_net(next_states).max(1)[0]
-            target_q_values = rewards + (1 - dones) * self.gamma * next_q_values
+            next_acts = self.policy_net(next_states).argmax(dim=1)
+            next_q_values = self.target_net(next_states).gather(1, next_acts.unsqueeze(1)).squeeze(1)
+            target_q_values = rewards - (1 - dones) * self.gamma * next_q_values
 
         # Compute loss
         loss = nn.MSELoss()(current_q_values, target_q_values)
@@ -228,10 +233,12 @@ class DQNAgent:
         Returns:
             Q-values array of shape (action_size,)
         """
-        state = torch.FloatTensor(game.get_state_tensor()).unsqueeze(0).to(self.device)
+        state = torch.FloatTensor(game.get_state_tensor_normalized()).unsqueeze(0).to(self.device)
 
+        self.policy_net.eval()
         with torch.no_grad():
             q_values = self.policy_net(state).cpu().numpy()[0]
+        self.policy_net.train()
 
         return q_values
 
@@ -266,7 +273,7 @@ class DQNAgent:
 
     def save(self, filepath):
         """Save the agent's network weights and training stats"""
-        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
 
         checkpoint = {
             'policy_net_state_dict': self.policy_net.state_dict(),
@@ -309,8 +316,13 @@ _ACTION_SIZE = 27
 class PrioritizedReplayBuffer:
     """
     Prioritized Experience Replay using proportional priorities.
-    Pre-allocates all storage as numpy arrays for minimal overhead.
-    Supports add_batch for efficient bulk insertion after vectorized rollouts.
+
+    §159+§160: When `device` is a CUDA device:
+    - Data arrays (states, actions, rewards, next_states, dones) are stored
+      as CUDA tensors — zero-copy path from buffer to training forward pass.
+    - Priority array and cumsum live on GPU too — torch.searchsorted replaces
+      numpy.searchsorted on a 76MB CPU array (eliminates 200ms CPU bottleneck).
+    Result: sample() drops from ~200ms (CPU) to ~2ms (GPU).
     """
 
     def __init__(
@@ -321,6 +333,7 @@ class PrioritizedReplayBuffer:
         beta_start: float = 0.4,
         beta_end: float = 1.0,
         beta_steps: int = 500_000,
+        device=None,
     ):
         self.capacity = capacity
         self.alpha = alpha
@@ -331,57 +344,239 @@ class PrioritizedReplayBuffer:
         self.ptr = 0
         self.size = 0
 
-        self.states = np.zeros((capacity, state_size), dtype=np.float32)
-        self.actions = np.zeros(capacity, dtype=np.int32)
-        self.rewards = np.zeros(capacity, dtype=np.float32)
-        self.next_states = np.zeros((capacity, state_size), dtype=np.float32)
-        self.dones = np.zeros(capacity, dtype=np.float32)
-        self.priorities = np.ones(capacity, dtype=np.float32)
+        # §159: On CUDA, store data arrays as GPU tensors for zero-copy sample().
+        import torch as _torch
+        _dev = _torch.device(device) if device is not None and not hasattr(device, "type") else device
+        self._on_device: bool = (_dev is not None and _dev.type == "cuda")
+        self._device = _dev
+
+        if self._on_device:
+            self.states      = _torch.zeros((capacity, state_size), dtype=_torch.float32, device=_dev)
+            self.actions     = _torch.zeros(capacity, dtype=_torch.int32, device=_dev)
+            self.rewards     = _torch.zeros(capacity, dtype=_torch.float32, device=_dev)
+            self.next_states = _torch.zeros((capacity, state_size), dtype=_torch.float32, device=_dev)
+            self.dones       = _torch.zeros(capacity, dtype=_torch.float32, device=_dev)
+            # §160: GPU priorities for torch.searchsorted — eliminates 200ms CPU bottleneck.
+            self.priorities_gpu = _torch.ones(capacity, dtype=_torch.float32, device=_dev)
+        else:
+            self.states      = np.zeros((capacity, state_size), dtype=np.float32)
+            self.actions     = np.zeros(capacity, dtype=np.int32)
+            self.rewards     = np.zeros(capacity, dtype=np.float32)
+            self.next_states = np.zeros((capacity, state_size), dtype=np.float32)
+            self.dones       = np.zeros(capacity, dtype=np.float32)
+
+        self.priorities = np.ones(capacity, dtype=np.float32)  # CPU; used for update_priorities
         self.max_priority: float = 1.0
         # Cached cumsum refreshed every _REFRESH_INTERVAL sample() calls.
-        # Amortises the O(N) cumsum cost over many gradient steps.
         self._REFRESH_INTERVAL = 16
         self._sample_calls = 0
-        self._cumsum_cache: Optional[np.ndarray] = None
+        self._cumsum_cache: Optional[np.ndarray] = None       # CPU path
+        self._cumsum_gpu = None                                # GPU path (§160)
         self._raw_cache: Optional[np.ndarray] = None
         self._cache_total: float = 0.0
 
     def add(self, state, action: int, reward: float, next_state, done: float):
-        self.states[self.ptr] = state
-        self.actions[self.ptr] = action
-        self.rewards[self.ptr] = reward
-        self.next_states[self.ptr] = next_state
-        self.dones[self.ptr] = done
+        if self._on_device:
+            import torch as _torch
+            self.states[self.ptr]      = _torch.as_tensor(state, dtype=_torch.float32, device=self._device)
+            self.actions[self.ptr]     = int(action)
+            self.rewards[self.ptr]     = float(reward)
+            self.next_states[self.ptr] = _torch.as_tensor(next_state, dtype=_torch.float32, device=self._device)
+            self.dones[self.ptr]       = float(done)
+        else:
+            self.states[self.ptr]      = state
+            self.actions[self.ptr]     = action
+            self.rewards[self.ptr]     = reward
+            self.next_states[self.ptr] = next_state
+            self.dones[self.ptr]       = done
         self.priorities[self.ptr] = self.max_priority
+        if self._on_device:
+            self.priorities_gpu[self.ptr] = self.max_priority  # §160
 
         self.ptr = (self.ptr + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
 
-    def add_batch(self, transitions: list):
-        for state, action, reward, next_state, done in transitions:
-            self.add(state, action, reward, next_state, done)
+    def _bulk_write(
+        self,
+        st: np.ndarray,
+        act: np.ndarray,
+        rew: np.ndarray,
+        nst: np.ndarray,
+        don: np.ndarray,
+        n: int,
+    ) -> None:
+        """§157: Shared circular-buffer write logic for add_batch and add_batch_arrays."""
+        if n >= self.capacity:
+            st  = st[-self.capacity:]
+            act = act[-self.capacity:]
+            rew = rew[-self.capacity:]
+            nst = nst[-self.capacity:]
+            don = don[-self.capacity:]
+            n   = self.capacity
+
+        tail = self.capacity - self.ptr
+
+        if self._on_device:
+            # §159: Copy numpy arrays to GPU tensor slices.
+            import torch as _torch
+            st_t  = _torch.as_tensor(st,  dtype=_torch.float32)
+            act_t = _torch.as_tensor(act, dtype=_torch.int32)
+            rew_t = _torch.as_tensor(rew, dtype=_torch.float32)
+            nst_t = _torch.as_tensor(nst, dtype=_torch.float32)
+            don_t = _torch.as_tensor(don, dtype=_torch.float32)
+
+            if n <= tail:
+                sl = slice(self.ptr, self.ptr + n)
+                self.states[sl].copy_(st_t,   non_blocking=True)
+                self.actions[sl].copy_(act_t, non_blocking=True)
+                self.rewards[sl].copy_(rew_t, non_blocking=True)
+                self.next_states[sl].copy_(nst_t, non_blocking=True)
+                self.dones[sl].copy_(don_t,   non_blocking=True)
+                self.priorities[sl] = self.max_priority
+                self.priorities_gpu[sl] = self.max_priority       # §160
+            else:
+                rem = n - tail
+                self.states[self.ptr:].copy_(st_t[:tail],  non_blocking=True)
+                self.states[:rem].copy_(st_t[tail:],       non_blocking=True)
+                self.actions[self.ptr:].copy_(act_t[:tail], non_blocking=True)
+                self.actions[:rem].copy_(act_t[tail:],     non_blocking=True)
+                self.rewards[self.ptr:].copy_(rew_t[:tail], non_blocking=True)
+                self.rewards[:rem].copy_(rew_t[tail:],     non_blocking=True)
+                self.next_states[self.ptr:].copy_(nst_t[:tail], non_blocking=True)
+                self.next_states[:rem].copy_(nst_t[tail:],      non_blocking=True)
+                self.dones[self.ptr:].copy_(don_t[:tail],  non_blocking=True)
+                self.dones[:rem].copy_(don_t[tail:],       non_blocking=True)
+                self.priorities[self.ptr:] = self.max_priority
+                self.priorities[:rem]      = self.max_priority
+                self.priorities_gpu[self.ptr:] = self.max_priority  # §160
+                self.priorities_gpu[:rem]      = self.max_priority
+        else:
+            if n <= tail:
+                sl = slice(self.ptr, self.ptr + n)
+                self.states[sl]      = st
+                self.actions[sl]     = act
+                self.rewards[sl]     = rew
+                self.next_states[sl] = nst
+                self.dones[sl]       = don
+                self.priorities[sl]  = self.max_priority
+            else:
+                rem = n - tail
+                self.states[self.ptr:]      = st[:tail];    self.states[:rem]      = st[tail:]
+                self.actions[self.ptr:]     = act[:tail];   self.actions[:rem]     = act[tail:]
+                self.rewards[self.ptr:]     = rew[:tail];   self.rewards[:rem]     = rew[tail:]
+                self.next_states[self.ptr:] = nst[:tail];   self.next_states[:rem] = nst[tail:]
+                self.dones[self.ptr:]       = don[:tail];   self.dones[:rem]       = don[tail:]
+                self.priorities[self.ptr:]  = self.max_priority
+                self.priorities[:rem]       = self.max_priority
+
+        self.ptr  = (self.ptr + n) % self.capacity
+        self.size = min(self.size + n, self.capacity)
+
+    def add_batch_arrays(
+        self,
+        states: np.ndarray,
+        actions: np.ndarray,
+        rewards: np.ndarray,
+        next_states: np.ndarray,
+        dones: np.ndarray,
+    ) -> None:
+        """§157: Direct numpy-array insert — bypasses zip(*tuples) + np.array() overhead."""
+        st  = states.astype(np.float32, copy=False)
+        act = actions.astype(np.int32,   copy=False)
+        rew = rewards.astype(np.float32, copy=False)
+        nst = next_states.astype(np.float32, copy=False)
+        don = dones.astype(np.float32, copy=False)
+        n   = len(st)
+        if n == 0:
+            return
+        self._bulk_write(st, act, rew, nst, don, n)
+
+    def add_batch(self, transitions: list) -> None:
+        """
+        §138 vectorized bulk insert: replaces per-item Python loop with
+        contiguous numpy slice writes — ~100× faster for large augmented batches.
+        Handles circular-buffer wrap-around with at most 2 contiguous writes.
+        When n > capacity (e.g. symmetry-augmented batches > buffer size) only the
+        last `capacity` items are kept, matching the semantics of per-item add().
+        """
+        n = len(transitions)
+        if n == 0:
+            return
+        sa, aa, ra, nsa, da = zip(*transitions)
+        st  = np.array(sa,  dtype=np.float32)
+        act = np.array(aa,  dtype=np.int32)
+        rew = np.array(ra,  dtype=np.float32)
+        nst = np.array(nsa, dtype=np.float32)
+        don = np.array(da,  dtype=np.float32)
+        self._bulk_write(st, act, rew, nst, don, n)
 
     def sample(self, batch_size: int):
-        # Rebuild cumsum every _REFRESH_INTERVAL calls to amortise O(N) cost.
-        # Each refresh covers ~2.5% buffer changes (negligible distribution drift).
-        if self._cumsum_cache is None or self._sample_calls % self._REFRESH_INTERVAL == 0:
+        self._sample_calls += 1
+        _interval_tick = (self._sample_calls - 1) % self._REFRESH_INTERVAL == 0
+        if self._on_device:
+            need_refresh = self._cumsum_gpu is None or _interval_tick
+        else:
+            need_refresh = self._cumsum_cache is None or _interval_tick
+
+        if self._on_device:
+            # §160: GPU-side priority sampling — torch.searchsorted replaces
+            # numpy.searchsorted on a 76MB CPU array (saves ~200ms per call).
+            import torch as _torch
+            if need_refresh or self._cumsum_gpu is None:
+                with _torch.no_grad():
+                    raw_gpu = self.priorities_gpu[:self.size].pow(self.alpha)
+                    self._cumsum_gpu = _torch.cumsum(raw_gpu, dim=0)
+                    self._raw_gpu    = raw_gpu
+                    self._cache_total = float(self._cumsum_gpu[-1])
+
+            total = self._cache_total
+            r_gpu = _torch.rand(batch_size, device=self._device) * total
+            idx_t = _torch.searchsorted(self._cumsum_gpu, r_gpu).clamp_(0, self.size - 1)
+
+            # IS weights on GPU
+            raw_at_idx = self._raw_gpu[idx_t]
+            probs  = raw_at_idx / total
+            w_gpu  = (self.size * probs).pow_(-self.beta)
+            w_gpu  = (w_gpu / w_gpu.max()).float()
+            self.beta = min(self.beta_end, self.beta + self.beta_increment)
+
+            # §158: Sort for coalesced memory access on GPU
+            sort_ord = _torch.argsort(idx_t)
+            idx_t  = idx_t[sort_ord]
+            w_gpu  = w_gpu[sort_ord]
+
+            indices = idx_t.cpu().numpy()  # for update_priorities (CPU op)
+            return (
+                self.states[idx_t],
+                self.actions[idx_t],
+                self.rewards[idx_t],
+                self.next_states[idx_t],
+                self.dones[idx_t],
+                indices,
+                w_gpu,
+            )
+
+        # CPU path (unchanged)
+        if need_refresh or self._cumsum_cache is None:
             raw = self.priorities[: self.size] ** self.alpha
             self._cumsum_cache = np.cumsum(raw)
             self._raw_cache = raw
             self._cache_total = float(self._cumsum_cache[-1])
-        self._sample_calls += 1
 
         total = self._cache_total
-        # Vectorised searchsorted — O(batch*logN) vs O(N) per-sample loop
         r = np.random.uniform(0.0, total, batch_size)
         indices = np.searchsorted(self._cumsum_cache, r, side="left")
         np.clip(indices, 0, self.size - 1, out=indices)
 
-        # Importance-sampling weights — annealed toward unbiased as beta -> 1
         probs = self._raw_cache[indices] / total
         weights = (self.size * probs) ** (-self.beta)
         weights = (weights / weights.max()).astype(np.float32)
         self.beta = min(self.beta_end, self.beta + self.beta_increment)
+
+        # §158: Sort indices for cache-friendly gather
+        sort_ord = np.argsort(indices, kind="stable")
+        indices  = indices[sort_ord]
+        weights  = weights[sort_ord]
 
         return (
             self.states[indices],
@@ -396,7 +591,15 @@ class PrioritizedReplayBuffer:
     def update_priorities(self, indices: np.ndarray, priorities: np.ndarray):
         np.clip(priorities, 1e-6, None, out=priorities)
         self.priorities[indices] = priorities
-        self.max_priority = float(self.priorities[: self.size].max())
+        # §137: O(batch) local max instead of O(capacity) global scan.
+        self.max_priority = max(float(self.max_priority), float(priorities.max()))
+        if self._on_device:
+            # §160: Sync GPU priorities to keep GPU searchsorted accurate.
+            import torch as _torch
+            with _torch.no_grad():
+                idx_t  = _torch.from_numpy(indices).to(self._device)
+                prio_t = _torch.from_numpy(priorities).to(self._device)
+                self.priorities_gpu[idx_t] = prio_t
 
     def __len__(self) -> int:
         return self.size
@@ -432,15 +635,28 @@ class GPUDQNAgent:
         compile_model: bool = True,
         device=None,
         hidden_sizes: tuple = (1024, 512, 256),
+        tau: float = 0.005,
+        beta_steps: int = 500_000,
+        mc_returns: bool = False,
+        lr_steps: int = 300_000,
     ):
         self.state_size = state_size
         self.action_size = action_size
+        self.hidden_sizes = tuple(hidden_sizes)
         self.gamma = gamma
         self.epsilon = epsilon_start
         self.epsilon_end = epsilon_end
         self.epsilon_decay = epsilon_decay
         self.batch_size = batch_size
         self.target_update_freq = target_update_freq
+        # §162: when mc_returns=True all stored dones=1.0, so skip next-state
+        # inference in _compute_loss entirely — no CUDA sync, no wasted forwards.
+        self._mc_returns = mc_returns
+        # §146: Polyak soft-update coefficient. When τ > 0, target network is
+        # updated every gradient step as: target = (1-τ)*target + τ*policy.
+        # τ=0.005 gives ~200-step lag (1/τ), far smoother than hard copy every 5000.
+        # When τ=0, falls back to hard copy every target_update_freq steps.
+        self._tau = tau
         self.learn_step_counter = 0
         self.episode_count = 0
 
@@ -475,22 +691,28 @@ class GPUDQNAgent:
             eps=1e-5,
             weight_decay=1e-5,
         )
+        # §142/§170: CosineAnnealingLR with configurable T_max.
+        # T_max is a half-period: LR decays from lr_max to eta_min over lr_steps,
+        # then would rise again. Pass lr_steps ≥ total expected gradient steps to
+        # keep LR monotonically decaying for the full run.
         self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
-            self.optimizer, T_max=2_000_000, eta_min=1e-5
+            self.optimizer, T_max=lr_steps, eta_min=1e-5
         )
 
-        if self.use_amp and self._need_scaler:
-            self.scaler = torch.amp.GradScaler("cuda")
+        if self.use_amp and self._need_scaler:  # True only on pre-Blackwell (FP16) GPUs
+            self.scaler = torch.amp.GradScaler("cuda")  # pragma: no cover
         else:
             self.scaler = None
 
         self.memory = PrioritizedReplayBuffer(
             buffer_size,
             state_size=state_size,
-            beta_steps=500_000,
+            beta_steps=beta_steps,
+            device=self.device,  # §159: GPU-side buffer when training on CUDA
         )
 
         self.losses: list = []
+        self._last_grad_norm: float = 0.0
 
         if self.device.type == "cuda":
             total_p = sum(p.numel() for p in self.policy_net.parameters())
@@ -505,13 +727,18 @@ class GPUDQNAgent:
     # Action selection
     # ------------------------------------------------------------------
 
-    def get_actions_batch(self, games: list, epsilon: float = None) -> list:
+    def get_actions_batch(self, games: list, epsilon: float = None,
+                          precomputed_states: list = None) -> list:
         """
         Select actions for a list of game states using a single batched
         GPU forward pass for greedy actions.
 
         Returns list of (row, col, size) tuples, same length as `games`.
         Returns None for games with no legal moves.
+
+        precomputed_states: optional list (same length as games) of pre-captured
+        state tensors; avoids a redundant get_state_tensor_normalized() call when
+        the caller has already captured states for transition storage (§140).
         """
         if epsilon is None:
             epsilon = self.epsilon
@@ -531,13 +758,17 @@ class GPUDQNAgent:
                 actions[i] = random.choice(moves)
             else:
                 greedy_ids.append(i)
-                greedy_states.append(game.get_state_tensor())
+                if precomputed_states is not None:
+                    greedy_states.append(precomputed_states[i])
+                else:
+                    greedy_states.append(game.get_state_tensor_normalized())
 
         if greedy_states:
             states_np = np.array(greedy_states, dtype=np.float32)
             states_t = torch.from_numpy(states_np).to(self.device, non_blocking=True)
 
-            self.policy_net.eval()
+            # GPUDQNNetwork has no Dropout/BatchNorm — train/eval modes are
+            # equivalent, so we skip the toggle to avoid torch.compile recompiles.
             with torch.no_grad():
                 if self.use_amp:
                     with torch.amp.autocast("cuda", dtype=self._amp_dtype):
@@ -545,21 +776,20 @@ class GPUDQNAgent:
                     q_np = qv_t.float().cpu().numpy()
                 else:
                     q_np = self.policy_net(states_t).cpu().numpy()
-            self.policy_net.train()
 
+            # §152: vectorized legal mask from state tensors — replaces per-game Python
+            # loop (O(27) per game) with batched NumPy ops (O(1) per game amortised).
+            # _legal_mask_from_state is verified identical to get_legal_moves (§149 test).
+            legal_np = self._legal_mask_from_state(states_t).cpu().numpy()  # (n_greedy, 27)
+            q_masked = np.where(legal_np, q_np, np.float32(-1e9))           # (n_greedy, 27)
+            best_actions = q_masked.argmax(axis=1)                           # (n_greedy,)
             for j, gi in enumerate(greedy_ids):
-                moves = legal_cache[gi]
-                qv = q_np[j]
-                mask = np.full(self.action_size, -1e9, dtype=np.float32)
-                for row, col, sz in moves:
-                    idx = row * 9 + col * 3 + (sz - 1)
-                    mask[idx] = qv[idx]
-                best = int(np.argmax(mask))
+                best = int(best_actions[j])
                 actions[gi] = (best // 9, (best % 9) // 3, (best % 3) + 1)
 
         # Fallback for any remaining None with legal moves
         for i, (act, moves) in enumerate(zip(actions, legal_cache)):
-            if act is None and moves:
+            if act is None and moves:  # pragma: no cover — greedy pass never leaves None for valid positions
                 actions[i] = random.choice(moves)
 
         return actions
@@ -580,12 +810,21 @@ class GPUDQNAgent:
 
         s, a, r, ns, d, idxs, w = self.memory.sample(self.batch_size)
 
-        states = torch.from_numpy(s).to(self.device, non_blocking=True)
-        actions = torch.from_numpy(a).long().to(self.device, non_blocking=True)
-        rewards = torch.from_numpy(r).to(self.device, non_blocking=True)
-        next_states = torch.from_numpy(ns).to(self.device, non_blocking=True)
-        dones = torch.from_numpy(d).to(self.device, non_blocking=True)
-        weights = torch.from_numpy(w).to(self.device, non_blocking=True)
+        # §159: GPU buffer returns CUDA tensors directly; CPU buffer returns numpy.
+        if isinstance(s, np.ndarray):
+            states      = torch.from_numpy(s).to(self.device, non_blocking=True)
+            actions     = torch.from_numpy(a).long().to(self.device, non_blocking=True)
+            rewards     = torch.from_numpy(r).to(self.device, non_blocking=True)
+            next_states = torch.from_numpy(ns).to(self.device, non_blocking=True)
+            dones       = torch.from_numpy(d).to(self.device, non_blocking=True)
+            weights     = torch.from_numpy(w).to(self.device, non_blocking=True)
+        else:
+            states      = s
+            actions     = a.long()
+            rewards     = r
+            next_states = ns
+            dones       = d
+            weights     = w
 
         self.policy_net.train()
 
@@ -596,19 +835,20 @@ class GPUDQNAgent:
             if self.scaler is not None:
                 self.scaler.scale(loss).backward()
                 self.scaler.unscale_(self.optimizer)
-                torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), 10.0)
+                grad_norm = float(torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), 10.0))
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             else:
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), 10.0)
+                grad_norm = float(torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), 10.0))
                 self.optimizer.step()
         else:
             loss, td_err = self._compute_loss(states, actions, rewards, next_states, dones, weights)
             self.optimizer.zero_grad(set_to_none=True)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), 10.0)
+            grad_norm = float(torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), 10.0))
             self.optimizer.step()
+        self._last_grad_norm = grad_norm
 
         self.scheduler.step()
 
@@ -616,10 +856,16 @@ class GPUDQNAgent:
         self.memory.update_priorities(idxs, td_np + 1e-6)
 
         self.learn_step_counter += 1
-        if self.learn_step_counter % self.target_update_freq == 0:
-            self.target_net.load_state_dict(
-                {k: v for k, v in self.policy_net.state_dict().items()}
-            )
+        raw_policy = getattr(self.policy_net, "_orig_mod", self.policy_net)
+        raw_target = getattr(self.target_net, "_orig_mod", self.target_net)
+        if self._tau > 0.0:
+            # §146: Polyak EMA — no abrupt target jumps, ~1/τ step lag.
+            _one_minus_tau = 1.0 - self._tau
+            with torch.no_grad():
+                for p_pol, p_tgt in zip(raw_policy.parameters(), raw_target.parameters()):
+                    p_tgt.data.mul_(_one_minus_tau).add_(p_pol.data, alpha=self._tau)
+        elif self.learn_step_counter % self.target_update_freq == 0:
+            raw_target.load_state_dict(raw_policy.state_dict())
             self.target_net.eval()
 
         self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
@@ -628,12 +874,39 @@ class GPUDQNAgent:
         self.losses.append(loss_val)
         return loss_val
 
+    # Precomputed: action index a maps to size-slot a%3 (0=S,1=M,2=L).
+    _ACT_SZ_IDX = torch.arange(27) % 3  # (27,) — moved to device in __init__ lazily
+
+    def _legal_mask_from_state(self, states: torch.Tensor) -> torch.Tensor:
+        """§149: Derive legal action mask from state tensor — no extra buffer storage.
+        A cell (r,c,sz) is legal when:
+          (a) neither player has a piece there: states[:, a] + states[:, 27+a] < 0.5
+          (b) current player has pieces of that size: states[:, 54 + a%3] > 0
+        Returns bool mask (B, 27) where True = legal.
+        """
+        sz_idx = self._ACT_SZ_IDX.to(states.device)   # (27,)
+        not_occupied = (states[:, :27] + states[:, 27:54]) < 0.5  # (B, 27)
+        piece_avail  = states[:, 54:57] > 0             # (B, 3)
+        return not_occupied & piece_avail[:, sz_idx]    # (B, 27)
+
     def _compute_loss(self, states, actions, rewards, next_states, dones, weights):
         current_q = self.policy_net(states).gather(1, actions.unsqueeze(1)).squeeze(1)
         with torch.no_grad():
-            next_acts = self.policy_net(next_states).argmax(dim=1)
-            next_q = self.target_net(next_states).gather(1, next_acts.unsqueeze(1)).squeeze(1)
-            target_q = rewards + (1.0 - dones) * self.gamma * next_q
+            if self._mc_returns:
+                # §162: MC returns → all dones=1.0, bootstrap term always zero.
+                # Skip both policy and target forward passes on next_states entirely.
+                # Static flag avoids CUDA sync that a runtime .any() check would need.
+                target_q = rewards
+            else:
+                # §149: mask illegal next-actions so argmax picks from legal moves only.
+                # Without masking, early-training noise can push illegal actions to high Q,
+                # biasing the TD target and slowing convergence.
+                legal = self._legal_mask_from_state(next_states)  # (B, 27)
+                next_q_all = self.policy_net(next_states).masked_fill(~legal, -1e9)
+                next_acts = next_q_all.argmax(dim=1)
+                next_q = self.target_net(next_states).gather(1, next_acts.unsqueeze(1)).squeeze(1)
+                # §134 negamax: next_q is the opponent's best value; subtract.
+                target_q = rewards - (1.0 - dones) * self.gamma * next_q
         td_errors = (current_q - target_q.detach()).abs()
         loss = (weights * F.huber_loss(current_q, target_q.detach(), reduction="none")).mean()
         return loss, td_errors
@@ -646,11 +919,9 @@ class GPUDQNAgent:
         self.memory.add(state, action, reward, next_state, done)
 
     def get_q_values(self, game: TicTacPro) -> np.ndarray:
-        state_t = torch.FloatTensor(game.get_state_tensor()).unsqueeze(0).to(self.device)
-        self.policy_net.eval()
+        state_t = torch.FloatTensor(game.get_state_tensor_normalized()).unsqueeze(0).to(self.device)
         with torch.no_grad():
             q = self.policy_net(state_t).float().cpu().numpy()[0]
-        self.policy_net.train()
         return q
 
     def get_move_suggestions(self, game: TicTacPro, player: Player, top_k: int = 3):
@@ -664,6 +935,24 @@ class GPUDQNAgent:
             reverse=True,
         )
         return ranked[:top_k]
+
+    def recalibrate_schedules(self, remaining_steps: int) -> None:
+        """§184: recalibrate PER beta and LR schedules to the actual run length.
+
+        Called once after the first log interval when measured throughput differs
+        from the pre-run estimate.  Ensures beta reaches 1.0 and LR reaches
+        eta_min by end of training instead of stalling mid-curve.
+        """
+        remaining_steps = max(remaining_steps, 1)
+        # PER beta: anneal from current value to beta_end over remaining_steps
+        self.memory.beta_increment = (
+            (self.memory.beta_end - self.memory.beta) / remaining_steps
+        )
+        # LR: set T_max so cosine decay finishes at end of run.
+        # Setting T_max = learn_step_counter + remaining_steps and keeping
+        # last_epoch = learn_step_counter gives a smooth continuation that
+        # reaches eta_min exactly when training stops.
+        self.scheduler.T_max = self.learn_step_counter + remaining_steps
 
     def save(self, filepath: str):
         os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
@@ -679,6 +968,11 @@ class GPUDQNAgent:
             "learn_step_counter": self.learn_step_counter,
             "episode_count": self.episode_count,
             "losses": self.losses[-10_000:],
+            "hidden_sizes": list(self.hidden_sizes),
+            "state_size": self.state_size,
+            "action_size": self.action_size,
+            # §153: preserve PER beta so resuming continues the annealing schedule
+            "per_beta": self.memory.beta,
         }
         if self.scaler is not None:
             ckpt["scaler"] = self.scaler.state_dict()
@@ -701,6 +995,14 @@ class GPUDQNAgent:
         self.losses = ckpt.get("losses", [])
         if self.scaler is not None and "scaler" in ckpt:
             self.scaler.load_state_dict(ckpt["scaler"])
+        # §153: restore PER beta to continue annealing from where it left off
+        if "per_beta" in ckpt:
+            self.memory.beta = ckpt["per_beta"]
+        saved_hs = ckpt.get("hidden_sizes")
+        if saved_hs and tuple(saved_hs) != self.hidden_sizes:
+            print(
+                f"WARNING: checkpoint hidden_sizes={saved_hs} != agent hidden_sizes={list(self.hidden_sizes)}"
+            )
         print(
             f"Loaded {filepath} | eps={self.episode_count:,} "
             f"steps={self.learn_step_counter:,} epsilon={self.epsilon:.4f}"
@@ -708,7 +1010,7 @@ class GPUDQNAgent:
         return True
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     # Test the agent
     print("Testing DQN Agent...")
     agent = DQNAgent()

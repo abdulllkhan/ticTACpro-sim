@@ -1,0 +1,93 @@
+{
+  "timestamp": "2026-05-26 19:48",
+  "n_games_each": 20,
+  "matches": [
+    {
+      "a": "random",
+      "b": "optimal",
+      "wins": {
+        "random": 0,
+        "optimal": 40,
+        "draw": 0
+      },
+      "elapsed_s": 0.0
+    },
+    {
+      "a": "random",
+      "b": "bullseye",
+      "wins": {
+        "random": 0,
+        "bullseye": 40,
+        "draw": 0
+      },
+      "elapsed_s": 0.0
+    },
+    {
+      "a": "random",
+      "b": "dqn",
+      "wins": {
+        "random": 0,
+        "dqn": 40,
+        "draw": 0
+      },
+      "elapsed_s": 0.4
+    },
+    {
+      "a": "optimal",
+      "b": "bullseye",
+      "wins": {
+        "optimal": 0,
+        "bullseye": 40,
+        "draw": 0
+      },
+      "elapsed_s": 0.0
+    },
+    {
+      "a": "optimal",
+      "b": "dqn",
+      "wins": {
+        "optimal": 20,
+        "dqn": 0,
+        "draw": 20
+      },
+      "elapsed_s": 0.1
+    },
+    {
+      "a": "bullseye",
+      "b": "dqn",
+      "wins": {
+        "bullseye": 0,
+        "dqn": 40,
+        "draw": 0
+      },
+      "elapsed_s": 0.1
+    }
+  ],
+  "totals": {
+    "random": {
+      "wins": 0,
+      "losses": 120,
+      "draws": 0,
+      "games": 120
+    },
+    "optimal": {
+      "wins": 60,
+      "losses": 40,
+      "draws": 20,
+      "games": 120
+    },
+    "bullseye": {
+      "wins": 80,
+      "losses": 40,
+      "draws": 0,
+      "games": 120
+    },
+    "dqn": {
+      "wins": 80,
+      "losses": 20,
+      "draws": 20,
+      "games": 120
+    }
+  },
+  "total_time_s": 0.5
+}

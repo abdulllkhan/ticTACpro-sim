@@ -7,12 +7,15 @@ Supports multi-GPU distributed training for intensive training runs (millions of
 """
 
 import argparse
+import os
+import tempfile
+
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
+
 from rl.agent import DQNAgent
 from rl.trainer import Trainer
-import os
 
 
 def setup_distributed(rank, world_size):
@@ -72,11 +75,13 @@ def train_worker(rank, world_size, args):
             device_ids=[rank]
         )
 
-    # Create trainer (only rank 0 saves checkpoints)
+    # Rank 0 saves to the real dirs; other ranks use temp dirs so Trainer
+    # never receives None (which causes os.makedirs crash — §107).
+    _tmpdir = os.path.join(tempfile.gettempdir(), f"ttp_rank{rank}")
     trainer = Trainer(
         agent=agent,
-        checkpoint_dir=args.checkpoint_dir if rank == 0 else None,
-        log_dir=args.log_dir if rank == 0 else None,
+        checkpoint_dir=args.checkpoint_dir if rank == 0 else _tmpdir + "_ckpt",
+        log_dir=args.log_dir if rank == 0 else _tmpdir + "_logs",
         save_freq=args.save_freq,
         eval_freq=args.eval_freq
     )

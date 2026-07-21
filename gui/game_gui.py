@@ -492,18 +492,8 @@ class TicTacProGUI:
         self.win_cells = []
         if not self.game.game_over or self.game.winner == Player.NONE:
             return
-        visible = self.game.get_visible_board()
-        w = self.game.winner.value
-
-        def check_line(cells):
-            for r, c in cells:
-                if visible[r, c, 0] != w:
-                    return False
-            return True
-
-        def same_size(cells):
-            sizes = [visible[r, c, 1] for r, c in cells]
-            return len(set(sizes)) == 1 and sizes[0] != 0
+        w     = int(self.game.winner)
+        board = self.game.board   # shape (3,3,3): board[r,c,sz_idx] == player int
 
         lines = [
             [(r, c) for c in range(3)] for r in range(3)
@@ -514,18 +504,19 @@ class TicTacProGUI:
             [(i, 2 - i) for i in range(3)],
         ]
 
-        for line in lines:
-            if check_line(line) and same_size(line):
-                self.win_cells = line
-                return
+        # Check each size layer independently — avoids false negatives when a
+        # winning small-piece line is overlaid with larger pieces in the same cells.
+        for sz in range(3):
+            for line in lines:
+                if all(int(board[r, c, sz]) == w for r, c in line):
+                    self.win_cells = list(line)
+                    return
 
-        # Bullseye check
+        # Bullseye: all 3 size slots at one cell belong to the winner.
+        # Previous code did stack[l][0] on a numpy scalar — IndexError crash.
         for r in range(3):
             for c in range(3):
-                stack = self.game.board[r, c]
-                layers = [stack[l] for l in range(3)
-                          if stack[l][0] == w and stack[l][1] == l + 1]
-                if len(layers) == 3:
+                if all(int(board[r, c, sz]) == w for sz in range(3)):
                     self.win_cells = [(r, c)]
                     return
 
