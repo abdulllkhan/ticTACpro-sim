@@ -51,7 +51,7 @@ def main():
     is_gpu_agent = "policy_net" in ckpt  # GPUDQNAgent uses "policy_net" key
 
     if is_gpu_agent:
-        agent = GPUDQNAgent(device=device, compile_model=False)
+        agent = GPUDQNAgent(device=device, compile_model=False, buffer_size=1)
         if not agent.load(args.checkpoint):
             print("ERROR: Failed to load agent.")
             return
@@ -86,7 +86,7 @@ def main():
 
     # Create and run GUI
     gui = TicTacProGUI(agent=agent, ai_player=ai_player)
-    gui.show_suggestions = not args.no_suggestions
+    gui.show_hints = not args.no_suggestions
     gui.run()
 
     print("\nThanks for playing!")

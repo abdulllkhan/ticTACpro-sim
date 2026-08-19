@@ -82,7 +82,8 @@ class Trainer:
 
         while not game.game_over:
             current_player = game.current_player
-            state = game.get_state_tensor()
+            # normalized: current player's pieces always in slots 0-26, matching get_action()
+            state = game.get_state_tensor_normalized()
 
             # Get action from agent
             action = self.agent.get_action(game, current_player)
@@ -99,43 +100,32 @@ class Trainer:
             move_count += 1
 
             # Get next state
-            next_state = game.get_state_tensor()
+            next_state = game.get_state_tensor_normalized()
 
-            # Calculate reward
-            if game.game_over:
-                if game.winner == current_player:
-                    reward = 1.0  # Win
-                elif game.winner == Player.NONE:
-                    reward = 0.0  # Draw
-                else:
-                    reward = -1.0  # Loss (shouldn't happen in self-play immediately)
-            else:
-                reward = 0.0  # Intermediate move
-
-            # Store experience
+            # Store experience (rewards assigned retroactively after game ends)
             episode_data.append({
                 'state': state,
                 'action': action_idx,
-                'reward': reward,
                 'next_state': next_state,
                 'done': game.game_over,
                 'player': current_player
             })
 
-        # Process episode data - assign rewards retroactively
+        # Process episode data - assign rewards retroactively.
+        # §134 terminal-only reward: only the move that ends the game gets ±1.0;
+        # all earlier transitions get 0.0 so negamax bootstrap propagates cleanly.
         winner = game.winner
         for i, data in enumerate(episode_data):
             player = data['player']
-
-            if winner == Player.NONE:
-                # Draw
-                final_reward = 0.0
-            elif winner == player:
-                # This player won
-                final_reward = 1.0
+            if data['done']:
+                if winner == Player.NONE:
+                    final_reward = 0.0
+                elif winner == player:
+                    final_reward = 1.0
+                else:  # pragma: no cover — game design: only winner makes done=True move
+                    final_reward = -1.0
             else:
-                # This player lost
-                final_reward = -1.0
+                final_reward = 0.0
 
             # Store in replay buffer
             self.agent.store_experience(
@@ -373,7 +363,7 @@ class Trainer:
         return stats
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     # Test the trainer
     print("Testing Trainer...")
 

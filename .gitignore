@@ -86,3 +86,16 @@ training.log
 training_state.json
 checkpoints_spark/
 logs_spark/
+
+# Generated logs, coverage, and versioned result dumps
+*.log
+.coverage
+.coverage.*
+htmlcov/
+tournament_results_v*.json
+
+# Extra training output dirs (model weights / run logs)
+checkpoints_normalized/
+checkpoints_run*/
+logs_normalized/
+logs_run*/
