@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TicTacPro</title>
+<meta name="description" content="TicTacPro — the 3-size tic-tac-toe. Play against a tree-search AI, right in your browser.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='42' fill='none' stroke='%23d92632' stroke-width='10'/><circle cx='50' cy='50' r='24' fill='none' stroke='%232563eb' stroke-width='9'/><circle cx='50' cy='50' r='9' fill='%23d92632'/></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="logo" aria-label="TicTacPro">
+    <svg class="logo-mark" viewBox="0 0 100 100" aria-hidden="true">
+      <circle cx="50" cy="50" r="40" fill="none" class="lm-l" stroke-width="11"/>
+      <circle cx="50" cy="50" r="23" fill="none" class="lm-m" stroke-width="10"/>
+      <circle cx="50" cy="50" r="8.5" class="lm-s"/>
+    </svg>
+    <span class="logo-text">Tic<em>Tac</em>Pro</span>
+  </div>
+
+  <div class="scorebar" id="scorebar" title="Session score (Red · Draws · Blue)">
+    <span class="score score-red"><i class="score-swatch sw-red"></i><b id="score-red">0</b></span>
+    <span class="score score-draw" id="score-draws-wrap"><b id="score-draws">0</b><small>draws</small></span>
+    <span class="score score-blue"><b id="score-blue">0</b><i class="score-swatch sw-blue"></i></span>
+  </div>
+
+  <div class="top-actions">
+    <button class="icon-btn" id="btn-rules" aria-label="How to play" title="How to play">?</button>
+    <button class="icon-btn" id="btn-theme" aria-label="Toggle theme" title="Theme">
+      <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path class="theme-icon" fill="currentColor" d="M12 3a9 9 0 1 0 9 9c0-.5-.05-1-.13-1.45A7 7 0 0 1 12 3z"/></svg>
+    </button>
+  </div>
+</header>
+
+<main class="layout">
+  <section class="stage">
+
+    <!-- Opponent tray -->
+    <div class="tray tray-top" id="tray-top" aria-label="Opponent pieces"></div>
+
+    <!-- Status -->
+    <div class="status" id="status" role="status" aria-live="polite">
+      <span class="status-dot" id="status-dot"></span>
+      <span class="status-text" id="status-text">Loading…</span>
+    </div>
+
+    <!-- Board -->
+    <div class="board-wrap" id="board-wrap">
+      <div class="board" id="board"></div>
+      <div class="cell-chooser" id="cell-chooser" role="group" aria-label="Choose a piece for this cell" hidden></div>
+    </div>
+
+    <!-- Player tray -->
+    <div class="tray tray-bottom" id="tray-bottom" aria-label="Your pieces"></div>
+
+    <!-- Actions -->
+    <div class="actions">
+      <button class="btn btn-ghost" id="btn-undo" title="Undo (U)">Undo</button>
+      <button class="btn btn-ghost" id="btn-hint" title="Hint (H)">Hint</button>
+      <button class="btn btn-primary" id="btn-new" title="New game (N)">New game</button>
+    </div>
+
+    <p class="tip" id="tip">Tap one of your pieces, then a glowing cell — or just tap any cell with room.</p>
+  </section>
+
+  <aside class="panel">
+    <div class="panel-card">
+      <h2 class="panel-title">Game</h2>
+
+      <div class="field">
+        <span class="field-label">Opponent</span>
+        <div class="seg" role="group" aria-label="Opponent" id="seg-mode">
+          <button class="seg-btn" data-mode="ai" aria-pressed="true">Computer</button>
+          <button class="seg-btn" data-mode="2p" aria-pressed="false">2 players</button>
+        </div>
+      </div>
+
+      <div class="field" id="field-side">
+        <span class="field-label">You play</span>
+        <div class="seg" role="group" aria-label="Your side" id="seg-side">
+          <button class="seg-btn" data-side="1" aria-pressed="true"><i class="dot dot-red"></i>Red · first</button>
+          <button class="seg-btn" data-side="2" aria-pressed="false"><i class="dot dot-blue"></i>Blue · second</button>
+        </div>
+      </div>
+
+      <div class="field" id="field-difficulty">
+        <span class="field-label">Difficulty</span>
+        <div class="seg seg-4" role="group" aria-label="Difficulty" id="seg-difficulty">
+          <button class="seg-btn" data-diff="easy" aria-pressed="false">Easy</button>
+          <button class="seg-btn" data-diff="medium" aria-pressed="true">Medium</button>
+          <button class="seg-btn" data-diff="hard" aria-pressed="false">Hard</button>
+          <button class="seg-btn" data-diff="expert" aria-pressed="false">Expert</button>
+        </div>
+        <p class="field-note" id="diff-note">Solid tactics — wins, blocks and threats.</p>
+      </div>
+
+      <button class="btn btn-ghost btn-block" id="btn-reset-score">Reset score</button>
+    </div>
+
+    <div class="panel-card panel-history">
+      <h2 class="panel-title">Moves</h2>
+      <ol class="history" id="history" aria-label="Move history"></ol>
+    </div>
+  </aside>
+</main>
+
+<!-- Result overlay -->
+<div class="overlay" id="overlay" hidden>
+  <div class="overlay-card" role="alertdialog" aria-modal="true" aria-labelledby="result-title" aria-describedby="result-sub">
+    <div class="result-mark" id="result-mark" aria-hidden="true"></div>
+    <h2 class="result-title" id="result-title">Red wins</h2>
+    <p class="result-sub" id="result-sub">Three Smalls on the diagonal.</p>
+    <div class="overlay-actions">
+      <button class="btn btn-ghost" id="btn-review">Review board</button>
+      <button class="btn btn-primary" id="btn-rematch">Play again</button>
+    </div>
+  </div>
+</div>
+
+<!-- Rules modal -->
+<div class="overlay" id="rules-overlay" hidden>
+  <div class="overlay-card rules-card" role="dialog" aria-modal="true" aria-labelledby="rules-title">
+    <button class="icon-btn rules-close" id="btn-rules-close" aria-label="Close">×</button>
+    <h2 class="result-title" id="rules-title">How to play</h2>
+
+    <div class="rule">
+      <svg class="rule-fig" viewBox="0 0 132 44" aria-hidden="true">
+        <g class="fig-cell"><rect x="2"  y="2" width="40" height="40" rx="9"/><circle cx="22" cy="22" r="5.5" class="fig-red-fill"/></g>
+        <g class="fig-cell"><rect x="46" y="2" width="40" height="40" rx="9"/><circle cx="66" cy="22" r="5.5" class="fig-red-fill"/></g>
+        <g class="fig-cell"><rect x="90" y="2" width="40" height="40" rx="9"/><circle cx="110" cy="22" r="5.5" class="fig-red-fill"/></g>
+      </svg>
+      <div>
+        <h3>Line of one size</h3>
+        <p>Three of your pieces of the <b>same size</b> in a row, column or diagonal wins.</p>
+      </div>
+    </div>
+
+    <div class="rule">
+      <svg class="rule-fig" viewBox="0 0 132 44" aria-hidden="true">
+        <g class="fig-cell"><rect x="46" y="2" width="40" height="40" rx="9"/>
+          <circle cx="66" cy="22" r="16" fill="none" class="fig-red" stroke-width="4"/>
+          <circle cx="66" cy="22" r="9.5" fill="none" class="fig-red" stroke-width="3.5"/>
+          <circle cx="66" cy="22" r="3.8" class="fig-red-fill"/></g>
+      </svg>
+      <div>
+        <h3>Bullseye</h3>
+        <p>Stack <b>all three sizes</b> of your color in one cell — instant win.</p>
+      </div>
+    </div>
+
+    <div class="rule">
+      <svg class="rule-fig" viewBox="0 0 132 44" aria-hidden="true">
+        <g class="fig-cell"><rect x="46" y="2" width="40" height="40" rx="9"/>
+          <circle cx="66" cy="22" r="16" fill="none" class="fig-blue" stroke-width="4"/>
+          <circle cx="66" cy="22" r="3.8" class="fig-red-fill"/></g>
+      </svg>
+      <div>
+        <h3>Slots are independent</h3>
+        <p>Each cell has a Small, a Medium and a Large slot. Pieces never cover each other — a cell can hold your Small <i>and</i> their Large.</p>
+      </div>
+    </div>
+
+    <div class="rule">
+      <div class="rule-fig rule-fig-text" aria-hidden="true">9×</div>
+      <div>
+        <h3>Nine pieces each</h3>
+        <p>3 Small, 3 Medium, 3 Large per player. Red moves first. If all 18 pieces land with no win, it's a draw.</p>
+      </div>
+    </div>
+
+    <p class="rules-fact">Fun fact: this game is <b>solved</b> — with perfect play, Red (moving first) always wins. Expert difficulty knows the winning lines. Can you find them?</p>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status"></div>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

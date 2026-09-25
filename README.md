@@ -2,6 +2,18 @@
 
 A complete reinforcement learning simulation for **Tic Tac Pro** by Brass Monkey. Train a Deep Q-Network (DQN) agent to master the game, then play against it and learn optimal strategies through visual analysis.
 
+## 🎮 Play in the Browser (no install)
+
+The game ships as a fully static web app in [`web/`](web/) — rules engine and
+tree-search AI (alpha-beta + the exact-solve opening book) run entirely
+client-side in a Web Worker. Deployable to Cloudflare Pages or Vercel as-is:
+
+```bash
+cd web && python3 -m http.server 8080   # then open http://localhost:8080
+```
+
+See [`web/README.md`](web/README.md) for one-click deploy instructions.
+
 ## What is Tic Tac Pro?
 
 Tic Tac Pro is an advanced version of tic-tac-toe featuring:
