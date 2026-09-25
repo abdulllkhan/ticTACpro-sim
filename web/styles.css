@@ -1,0 +1,385 @@
+/* ── TicTacPro design tokens ─────────────────────────────────────────────── */
+/* Palette. The pieces are the content, so the two player colors are the only
+   real pigment on the page: a signal crimson and a cobalt, both deep enough to
+   hold their own on white. Everything else is a neutral referee — white stage,
+   warm-grey wells, neutral ink. Open-slot guides get their own mixed "ceramic
+   inlay" tints (--red-ghost/--blue-ghost) instead of washed-out opacity tricks;
+   full pigment is reserved for the hovered slot and placed pieces.
+   Light is the default for everyone; dark exists only as an explicit toggle. */
+:root {
+  color-scheme: light;
+  --bg: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #f3f3f2;
+  --ink: #1b1d1f;
+  --ink-soft: #5f646a;
+  --line: #e6e6e4;
+  --red: #d1242f;
+  --red-ghost: #efd6d8;
+  --red-soft: #fae7e9;
+  --blue: #2757c9;
+  --blue-ghost: #d2dcf2;
+  --blue-soft: #e6edfb;
+  --accent: var(--red);
+  --gold: #d29a1e;
+  --ok: #1e8a4e;
+  --cell: #f1f1f0;
+  --cell-ink-shadow: rgba(20, 22, 24, 0.06);
+  --shadow: 0 10px 30px rgba(20, 22, 24, 0.10);
+  --shadow-soft: 0 2px 10px rgba(20, 22, 24, 0.06);
+  --radius: 18px;
+  /* Double ring: surface gap + solid cobalt, ≥3:1 against every ground. */
+  --focus: 0 0 0 2px var(--surface), 0 0 0 4px var(--blue);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #131517;
+  --surface: #1b1e21;
+  --surface-2: #24282c;
+  --ink: #edeef0;
+  --ink-soft: #9ba1a8;
+  --line: #2d3237;
+  --red: #ee4f59;
+  --red-ghost: #4b3034;
+  --red-soft: #3a2226;
+  --blue: #6292f4;
+  --blue-ghost: #2d3b58;
+  --blue-soft: #1e2a44;
+  --gold: #e2ac45;
+  --ok: #3cbd74;
+  --cell: #212529;
+  --cell-ink-shadow: rgba(0, 0, 0, 0.35);
+  --shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  --shadow-soft: 0 2px 10px rgba(0, 0, 0, 0.35);
+  --focus: 0 0 0 2px var(--surface), 0 0 0 4px var(--blue);
+}
+
+* { box-sizing: border-box; }
+
+html, body { margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.5 "Space Grotesk", system-ui, -apple-system, "Segoe UI", sans-serif;
+  min-height: 100dvh;
+  -webkit-tap-highlight-color: transparent;
+}
+
+button { font: inherit; color: inherit; }
+button:focus-visible { outline: none; box-shadow: var(--focus); }
+[hidden] { display: none !important; }
+
+/* ── Top bar ─────────────────────────────────────────────────────────────── */
+.topbar {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px clamp(16px, 4vw, 28px);
+  max-width: 1120px; margin: 0 auto;
+}
+.logo { display: flex; align-items: center; gap: 9px; user-select: none; }
+.logo-mark { width: 30px; height: 30px; }
+.lm-l { stroke: var(--red); }
+.lm-m { stroke: var(--blue); }
+.lm-s { fill: var(--red); }
+.logo-text { font-size: 21px; font-weight: 700; letter-spacing: -0.02em; }
+.logo-text em { font-style: normal; color: var(--blue); }
+
+.scorebar {
+  display: flex; align-items: center; gap: 4px;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: 999px; padding: 5px 8px; box-shadow: var(--shadow-soft);
+}
+.score { display: flex; align-items: center; gap: 7px; padding: 2px 9px; border-radius: 999px; font-size: 14px; }
+.score b { font-weight: 700; min-width: 1ch; text-align: center; }
+.score-red { color: var(--red); }
+.score-blue { color: var(--blue); }
+.score-draw { color: var(--ink-soft); gap: 5px; }
+.score-draw small { font-size: 11px; }
+.score-swatch { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.sw-red { background: var(--red); }
+.sw-blue { background: var(--blue); }
+
+.top-actions { display: flex; gap: 8px; }
+.icon-btn {
+  width: 36px; height: 36px; border-radius: 12px; border: 1px solid var(--line);
+  background: var(--surface); cursor: pointer; font-weight: 700; font-size: 16px;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: background 0.15s, transform 0.1s;
+}
+.icon-btn:hover { background: var(--surface-2); }
+.icon-btn:active { transform: scale(0.94); }
+
+/* ── Layout ──────────────────────────────────────────────────────────────── */
+.layout {
+  max-width: 1120px; margin: 0 auto;
+  padding: 4px clamp(16px, 4vw, 28px) 40px;
+  display: grid; grid-template-columns: 1fr; gap: 22px;
+}
+@media (min-width: 1000px) {
+  .layout { grid-template-columns: minmax(0, 1fr) 320px; align-items: start; }
+  .stage { position: sticky; top: 10px; }
+}
+
+.stage { display: flex; flex-direction: column; align-items: center; gap: 14px; }
+
+/* ── Status ──────────────────────────────────────────────────────────────── */
+.status {
+  display: flex; align-items: center; gap: 9px;
+  background: var(--surface); border: 1px solid var(--line);
+  padding: 7px 16px; border-radius: 999px; box-shadow: var(--shadow-soft);
+  min-height: 36px; font-weight: 600; font-size: 14px;
+}
+.status-dot { width: 11px; height: 11px; border-radius: 50%; background: var(--red); flex: none; }
+.status-dot.p2 { background: var(--blue); }
+.status-dot.pulse { animation: pulse 1.15s ease-in-out infinite; }
+.status-dot.thinking { animation: think 0.8s ease-in-out infinite; }
+.status-dot.done { background: var(--ok); animation: none; }
+.status-dot.draw { background: var(--ink-soft); animation: none; }
+@keyframes pulse { 50% { transform: scale(0.6); opacity: 0.5; } }
+@keyframes think { 0%,100% { transform: scale(1); } 50% { transform: scale(1.45); opacity: 0.65; } }
+
+/* ── Board ───────────────────────────────────────────────────────────────── */
+.board-wrap { position: relative; width: min(100%, 430px); }
+.board {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: clamp(8px, 2vw, 12px);
+  background: var(--surface); border: 1px solid var(--line);
+  padding: clamp(10px, 2.6vw, 16px); border-radius: 26px; box-shadow: var(--shadow);
+}
+.cell {
+  position: relative; aspect-ratio: 1; border: 0; padding: 0; cursor: pointer;
+  border-radius: var(--radius);
+  background: var(--cell);
+  box-shadow: inset 0 2px 6px var(--cell-ink-shadow);
+  transition: box-shadow 0.15s, transform 0.12s, background 0.15s;
+  touch-action: manipulation;
+}
+.cell svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; pointer-events: none; }
+
+/* Playable cells carry no extra chrome — the radial slot guides inside the
+   cell are the affordance (per user feedback: colored cell borders read as noise). */
+.cell.can-place:focus-visible { box-shadow: inset 0 2px 6px var(--cell-ink-shadow), var(--focus); }
+.cell.p1 { --glow: var(--red); }
+.cell.p2 { --glow: var(--blue); }
+
+@keyframes hintflash { 50% { background: color-mix(in srgb, var(--gold) 30%, var(--cell)); } }
+
+/* Hint: the exact suggested slot pulses in the player's own color. */
+.slot-open.hint-glow.pc-red { color: var(--red); animation: hint-pulse 0.9s ease-in-out 3; }
+.slot-open.hint-glow.pc-blue { color: var(--blue); animation: hint-pulse 0.9s ease-in-out 3; }
+@keyframes hint-pulse {
+  0%, 100% { filter: drop-shadow(0 0 1px currentColor); opacity: 0.5; }
+  50% { filter: drop-shadow(0 0 8px currentColor); opacity: 1; }
+}
+
+.cell.shake { animation: shake 0.3s; }
+@keyframes shake { 25% { transform: translateX(-4px); } 75% { transform: translateX(4px); } }
+
+/* Winning cells: the exact cells that won (3 for a line, 1 for a bullseye)
+   blink in the winner's color, then settle on a steady tint. */
+.cell.win { background: color-mix(in srgb, var(--win-color, var(--ok)) 18%, var(--cell)); }
+.cell.win.win-blink { animation: win-blink 0.8s ease-in-out 4; }
+@keyframes win-blink {
+  50% {
+    background: color-mix(in srgb, var(--win-color, var(--ok)) 55%, var(--cell));
+    box-shadow: inset 0 2px 6px var(--cell-ink-shadow),
+                0 0 18px color-mix(in srgb, var(--win-color, var(--ok)) 60%, transparent);
+  }
+}
+
+/* Piece geometry (SVG circles in a 100×100 viewBox) */
+.pc { transform-origin: 50px 50px; }
+.pc-red { color: var(--red); }
+.pc-blue { color: var(--blue); }
+.pc-pop { animation: pop 0.28s cubic-bezier(0.2, 1.6, 0.4, 1); }
+@keyframes pop { from { transform: scale(0.2); opacity: 0; } }
+.pc-last { filter: drop-shadow(0 0 3px currentColor); }
+
+/* Open-slot guides: every ring you could play sits in the cell as a quiet
+   ceramic-inlay tint; hovering its radial zone switches it to full pigment.
+   The sel variant marks the tray-selected size on touch devices. */
+.slot-open { transition: color 0.12s; }
+.slot-open.pc-red { color: var(--red-ghost); }
+.slot-open.pc-blue { color: var(--blue-ghost); }
+.slot-open.hot.pc-red { color: var(--red); filter: drop-shadow(0 0 5px currentColor); }
+.slot-open.hot.pc-blue { color: var(--blue); filter: drop-shadow(0 0 5px currentColor); }
+.slot-open.sel.pc-red { color: var(--red); opacity: 0.45; }
+.slot-open.sel.pc-blue { color: var(--blue); opacity: 0.45; }
+
+/* In-cell size chooser */
+.cell-chooser {
+  position: absolute; z-index: 30; display: flex; gap: 6px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
+  padding: 6px; box-shadow: var(--shadow);
+  animation: chooser-in 0.14s ease-out;
+}
+@keyframes chooser-in { from { transform: scale(0.85); opacity: 0; } }
+.chooser-btn {
+  width: 44px; height: 44px; border-radius: 10px; border: 1px solid var(--line);
+  background: var(--surface-2); cursor: pointer; padding: 4px;
+  transition: transform 0.1s, background 0.12s;
+}
+.chooser-btn:hover { transform: scale(1.06); background: var(--surface); }
+.chooser-btn svg { width: 100%; height: 100%; display: block; }
+
+/* ── Trays ───────────────────────────────────────────────────────────────── */
+.tray { display: flex; align-items: center; gap: 10px; width: min(100%, 430px); }
+.tray-label {
+  font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--ink-soft); min-width: 44px; text-align: center; line-height: 1.2;
+}
+.tray-label .who { display: block; font-size: 13px; }
+.tray-label .who.red { color: var(--red); }
+.tray-label .who.blue { color: var(--blue); }
+.tray-groups { display: flex; gap: 8px; flex: 1; }
+
+.size-chip {
+  flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px;
+  border: 2px solid transparent; border-radius: 16px; padding: 8px 4px 6px;
+  background: var(--surface); box-shadow: var(--shadow-soft); cursor: pointer;
+  transition: transform 0.12s, border-color 0.12s, opacity 0.15s, box-shadow 0.12s;
+}
+.size-chip svg { width: 34px; height: 34px; display: block; }
+.chip-count { font-size: 12px; font-weight: 700; color: var(--ink-soft); }
+.chip-count b { color: var(--ink); }
+.chip-name { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--ink-soft); }
+
+.size-chip.selected {
+  border-color: var(--chip-color, var(--red));
+  transform: translateY(-3px);
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--chip-color, var(--red)) 30%, transparent);
+}
+.size-chip.p1 { --chip-color: var(--red); }
+.size-chip.p2 { --chip-color: var(--blue); }
+.size-chip.informational { cursor: default; }
+.size-chip.is-disabled { cursor: default; opacity: 0.38; transform: none; box-shadow: none; }
+.size-chip.exhausted { opacity: 0.25; }
+.size-chip.hinted { animation: hintflash 0.9s ease-in-out 3; }
+
+/* Passive tray = the AI's inventory: compact and non-interactive. Applied by
+   JS only when the tray is not a live player's (in 2P both trays are active). */
+.tray-passive .size-chip { pointer-events: none; padding: 4px 4px 3px; border-radius: 12px; }
+.tray-passive .size-chip svg { width: 22px; height: 22px; }
+.tray-passive .chip-name { display: none; }
+.tray-passive .chip-count { font-size: 11px; }
+.tray.inactive { opacity: 0.55; }
+.tray { transition: opacity 0.2s; }
+
+/* ── Actions & tip ───────────────────────────────────────────────────────── */
+.actions { display: flex; gap: 10px; width: min(100%, 430px); }
+.btn {
+  border: 1px solid var(--line); border-radius: 14px; padding: 10px 18px;
+  font-weight: 600; font-size: 14px; cursor: pointer;
+  transition: transform 0.1s, background 0.12s, opacity 0.15s;
+}
+.btn:active { transform: scale(0.97); }
+.btn:disabled { opacity: 0.4; cursor: default; transform: none; }
+.btn-ghost { background: var(--surface); }
+.btn-ghost:hover:not(:disabled) { background: var(--surface-2); }
+.btn-primary { background: var(--ink); color: var(--bg); border-color: var(--ink); flex: 1; }
+.btn-primary:hover { opacity: 0.88; }
+.btn-block { width: 100%; }
+.tip { color: var(--ink-soft); font-size: 12.5px; margin: 0; text-align: center; }
+
+/* ── Side panel ──────────────────────────────────────────────────────────── */
+.panel { display: flex; flex-direction: column; gap: 16px; }
+.panel-card {
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: 20px; padding: 18px; box-shadow: var(--shadow-soft);
+}
+.panel-title {
+  margin: 0 0 14px; font-size: 12px; font-weight: 700;
+  letter-spacing: 0.09em; text-transform: uppercase; color: var(--ink-soft);
+}
+.field { margin-bottom: 14px; }
+.field-label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+.field-note { margin: 6px 0 0; font-size: 12px; color: var(--ink-soft); }
+
+.seg { display: flex; gap: 4px; background: var(--surface-2); border-radius: 12px; padding: 4px; }
+.seg-4 { flex-wrap: wrap; }
+.seg-btn {
+  flex: 1 1 40%; border: 0; background: transparent; border-radius: 9px;
+  padding: 7px 6px; font-size: 13px; font-weight: 600; cursor: pointer;
+  color: var(--ink-soft); transition: background 0.12s, color 0.12s;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  white-space: nowrap;
+}
+.seg-btn[aria-pressed="true"] { background: var(--surface); color: var(--ink); box-shadow: var(--shadow-soft); }
+.dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+.dot-red { background: var(--red); }
+.dot-blue { background: var(--blue); }
+
+.panel-history { min-height: 120px; }
+.history { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-height: 300px; overflow-y: auto; }
+.history li {
+  display: flex; align-items: center; gap: 8px; font-size: 13px;
+  background: var(--surface-2); padding: 6px 10px; border-radius: 10px;
+}
+.history .dot { flex: none; }
+.history .h-who { font-weight: 600; min-width: 42px; }
+.history .h-what { color: var(--ink-soft); }
+.history-empty { color: var(--ink-soft); font-size: 13px; }
+
+/* ── Overlays ────────────────────────────────────────────────────────────── */
+.overlay {
+  position: fixed; inset: 0; z-index: 100;
+  background: color-mix(in srgb, var(--bg) 40%, rgba(10, 10, 14, 0.55));
+  backdrop-filter: blur(3px);
+  display: flex; align-items: center; justify-content: center; padding: 16px;
+}
+.overlay-card {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 24px;
+  box-shadow: var(--shadow); padding: 28px; max-width: 430px; width: 100%;
+  text-align: center; animation: card-in 0.3s cubic-bezier(0.2, 1.4, 0.4, 1);
+  position: relative; max-height: 88dvh; overflow-y: auto;
+}
+@keyframes card-in { from { transform: scale(0.88) translateY(12px); opacity: 0; } }
+.result-mark { width: 74px; height: 74px; margin: 0 auto 10px; }
+.result-mark svg { width: 100%; height: 100%; }
+.result-title { margin: 0 0 6px; font-size: 26px; letter-spacing: -0.02em; }
+.result-sub { margin: 0 0 22px; color: var(--ink-soft); font-size: 14px; }
+.overlay-actions { display: flex; gap: 10px; justify-content: center; }
+.overlay-actions .btn-primary { flex: 0 1 auto; padding-inline: 26px; }
+
+/* Rules */
+.rules-card { text-align: left; }
+.rules-close { position: absolute; top: 14px; right: 14px; }
+.rule { display: flex; gap: 14px; align-items: center; margin: 18px 0; }
+.rule h3 { margin: 0 0 2px; font-size: 15px; }
+.rule p { margin: 0; font-size: 13.5px; color: var(--ink-soft); }
+.rule-fig { flex: none; width: 108px; }
+.rule-fig-text {
+  display: flex; align-items: center; justify-content: center;
+  font-size: 26px; font-weight: 700; color: var(--ink-soft);
+  background: var(--surface-2); border-radius: 14px; height: 44px;
+}
+.fig-cell rect { fill: var(--cell); }
+.fig-red { stroke: var(--red); }
+.fig-red-fill { fill: var(--red); }
+.fig-blue { stroke: var(--blue); }
+.rules-fact {
+  margin: 20px 0 0; padding: 12px 14px; border-radius: 14px;
+  background: var(--surface-2); font-size: 13px; color: var(--ink-soft);
+}
+
+/* Toast — stays in the DOM as a live region; visibility via opacity so
+   screen readers still receive the text. */
+.toast {
+  position: fixed; left: 50%; bottom: 26px;
+  background: var(--ink); color: var(--bg); font-size: 13.5px; font-weight: 600;
+  padding: 10px 18px; border-radius: 999px; box-shadow: var(--shadow);
+  z-index: 200; max-width: min(92vw, 420px); text-align: center;
+  opacity: 0; pointer-events: none; transform: translate(-50%, 8px);
+  transition: opacity 0.18s ease-out, transform 0.18s ease-out;
+}
+.toast.show { opacity: 1; transform: translate(-50%, 0); }
+.toast:empty { visibility: hidden; }
+
+/* Small screens */
+@media (max-width: 420px) {
+  .logo-text { font-size: 18px; }
+  .score-draw small { display: none; }
+  .actions .btn { padding-inline: 12px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
