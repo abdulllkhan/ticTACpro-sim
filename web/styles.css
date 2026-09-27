@@ -304,6 +304,7 @@ button:focus-visible { outline: none; box-shadow: var(--focus); }
   white-space: nowrap;
 }
 .seg-btn[aria-pressed="true"] { background: var(--surface); color: var(--ink); box-shadow: var(--shadow-soft); }
+.seg-btn-wide { flex-basis: 100%; }
 .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
 .dot-red { background: var(--red); }
 .dot-blue { background: var(--blue); }
