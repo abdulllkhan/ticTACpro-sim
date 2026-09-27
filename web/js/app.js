@@ -23,7 +23,9 @@ const DIFF_NOTES = {
   medium: 'Solid tactics — wins, blocks and threats.',
   hard: 'Tree search. Punishes loose play.',
   expert: 'Deep search + the solved opening book. Good luck.',
+  llm: 'Claude reads the board in words and reasons out a move. Slower, and it plays nothing like a search engine.',
 };
+const LLM_DIFFICULTY = 'llm';
 // SVG radii for S/M/L in a 100×100 cell viewBox: [radius, strokeWidth] (0 = filled)
 const PIECE_GEOM = [[13, 0], [26, 9], [40, 10]];
 
@@ -550,6 +552,11 @@ async function aiTurn() {
   renderStatus();
   renderTrays();
   updateActionButtons();
+  // The LLM tier goes over the network to a serverless function instead of
+  // the local search worker, so it gets its own path (and no local fallback —
+  // silently substituting minimax would misrepresent the experiment).
+  if (settings.difficulty === LLM_DIFFICULTY) return llmTurn(reqId + 1);
+
   const myReq = reqId + 1;   // askWorker increments reqId synchronously
   try {
     const [reply] = await Promise.all([
@@ -575,6 +582,33 @@ async function aiTurn() {
     }
   }
 }
+
+/** LLM tier: POST the position to /api/llm-move and play what comes back. */
+async function llmTurn(myReq) {
+  try {
+    const res = await fetch('/api/llm-move', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ state: snapshot(), effort: 'medium' }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (myReq !== reqId) return;   // superseded by a new game
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    lastLlmNote = data.reasoning || '';
+    if (data.retried) console.warn('LLM needed a correction to find a legal move');
+    applyAiMove(data.move);
+    if (lastLlmNote) toast(lastLlmNote);
+  } catch (err) {
+    if (myReq !== reqId) return;
+    console.error('LLM move failed:', err);
+    aiBusy = false;
+    toast(`LLM unavailable: ${err.message}`);
+    autoSelectSize();
+    render();
+    updateActionButtons();
+  }
+}
+let lastLlmNote = '';
 
 function applyAiMove(move) {
   aiBusy = false;
@@ -809,7 +843,7 @@ applyTheme(store.get(LS.theme, null));
 settings = { ...settings, ...store.get(LS.settings, {}) };
 if (!['ai', '2p'].includes(settings.mode)) settings.mode = 'ai';
 if (![RED, BLUE].includes(settings.side)) settings.side = RED;
-if (!['easy', 'medium', 'hard', 'expert'].includes(settings.difficulty)) settings.difficulty = 'medium';
+if (!Object.hasOwn(DIFF_NOTES, settings.difficulty)) settings.difficulty = 'medium';
 scores = { ...scores, ...store.get(LS.scores, {}) };
 renderControls();
 startNewGame();
