@@ -1,9 +1,0 @@
-{
-  "name": "tictacpro",
-  "private": true,
-  "type": "module",
-  "description": "TicTacPro static web app + LLM-opponent serverless function",
-  "dependencies": {
-    "@anthropic-ai/sdk": "^0.128.0"
-  }
-}

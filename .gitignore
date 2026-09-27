@@ -54,6 +54,7 @@ data/
 events.out.tfevents.*
 
 # macOS
+.DS_Store
 .AppleDouble
 .LSOverride
 
@@ -102,6 +103,3 @@ logs_run*/
 # Generated parity traces (rebuild with tests_web/gen_traces.py)
 tests_web/traces.json
 .vercel
-
-# Node / Vercel
-node_modules/

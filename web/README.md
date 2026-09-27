@@ -46,7 +46,7 @@ build step, so just:
 ```
 web/
 ├── index.html        app shell
-├── styles.css        design system (light default, dark via toggle)
+├── styles.css        design system (light/dark via prefers-color-scheme + toggle)
 └── js/
     ├── engine.js     game rules — port of game/tictacpro.py (parity-tested, see tests_web/)
     ├── heuristic.js  easy/medium policies — port of pick_rollout_move + OptimalAgent
@@ -54,12 +54,7 @@ web/
     ├── minimax.js    iterative-deepening negamax + alpha-beta + TT — port of rl/minimax_agent.py
     ├── ai.js         difficulty dispatcher (easy / medium / hard / expert)
     ├── worker.js     Web Worker wrapper so search never blocks the UI
-    ├── serialize.js  board → text, for describing a position to a language model
     └── app.js        UI logic
-
-api/                  (only needed for the LLM tier)
-├── _llm.js           the Claude call: prompt, strict tool schema, retry policy
-└── llm-move.js       POST /api/llm-move — thin HTTP wrapper
 ```
 
 ## AI difficulties
@@ -70,53 +65,6 @@ api/                  (only needed for the LLM tier)
 | Medium | win > block > threat heuristic | the MCTS rollout policy, with slips |
 | Hard | alpha-beta search, ~350 ms | no opening book |
 | Expert | alpha-beta search, ~1 s + opening book | plays the proven Red winning lines |
-| Claude (LLM) | Claude reads the position as text and reasons | needs a server — see below |
-
-### The LLM tier
-
-Every other tier runs entirely in the browser. This one cannot: an API key must
-never ship to the client, so it goes through a serverless function at
-`api/llm-move.js`. Everything else stays static.
-
-The board is described in words (per-cell slot listing, both inventories, and
-the explicit list of legal move ids like `CC-S`), the rules prompt is sent as a
-cached prefix, and the reply comes back through a `strict` tool schema so the
-move is always well-formed. An illegal move gets one corrective round-trip, and
-that retry is counted rather than hidden — the illegal-move rate is a result.
-
-To enable it after deploying, set the key in Vercel:
-
-```bash
-npx vercel env add ANTHROPIC_API_KEY production
-npx vercel deploy --prod          # redeploy so the function picks it up
-```
-
-Without the key the other four tiers work exactly as before; picking the LLM
-tier just reports that it is unavailable.
-
-**Cost:** roughly 10-15¢ per full game on `claude-opus-5`. The rules prompt is
-~670 tokens, which clears that model's 512-token caching minimum, so every move
-after the first in a game re-reads it at ~0.1× input price. (On Haiku 4.5 the
-minimum is 4096 tokens, so the same prefix would silently not cache.)
-
-### Benchmark
-
-`tests_web/llm_bench.mjs` measures how well the model actually plays, sharing
-the exact prompt and retry policy the deployed game uses:
-
-```bash
-export ANTHROPIC_API_KEY=...
-node tests_web/llm_bench.mjs tactics        # 5 positions with provable answers
-node tests_web/llm_bench.mjs match expert 4 # head-to-head vs a search tier
-node tests_web/llm_bench.mjs sweep          # accuracy across effort levels
-```
-
-The tactics suite covers taking a line win, taking a bullseye win, blocking a
-line, blocking a bullseye, and blocking into a cell that already holds a piece
-of another size (the rule models get wrong most often). Every position is
-verified against the engine before any billable call, so a wrong suite fails
-loudly instead of producing meaningless numbers. Each run prints accuracy,
-illegal-move rate, latency, cache hit rate, and estimated cost.
 
 TicTacPro is exactly solved: **the first player (Red) wins with perfect play
 from every opening move**. Expert as Red is meant to be practically unbeatable;
