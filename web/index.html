@@ -95,8 +95,26 @@
           <button class="seg-btn" data-diff="medium" aria-pressed="true">Medium</button>
           <button class="seg-btn" data-diff="hard" aria-pressed="false">Hard</button>
           <button class="seg-btn" data-diff="expert" aria-pressed="false">Expert</button>
+          <button class="seg-btn seg-btn-wide" data-diff="llm" aria-pressed="false">Claude (LLM)</button>
         </div>
         <p class="field-note" id="diff-note">Solid tactics — wins, blocks and threats.</p>
+
+        <!-- Only shown for the LLM tier. Local dev server only. -->
+        <div class="keybox" id="keybox" hidden>
+          <label class="field-label" for="api-key">Your Anthropic API key</label>
+          <input class="key-input" id="api-key" type="password" autocomplete="off"
+                 spellcheck="false" placeholder="sk-ant-..." aria-describedby="key-note">
+          <div class="key-row">
+            <button class="btn btn-ghost btn-sm" id="btn-key-save">Save</button>
+            <button class="btn btn-ghost btn-sm" id="btn-key-clear">Clear</button>
+            <span class="key-state" id="key-state">not set</span>
+          </div>
+          <p class="field-note" id="key-note">
+            Stays in this browser and goes only to your own local dev server.
+            Get one at console.anthropic.com — billed separately from any Claude
+            subscription. Roughly 10–15¢ per game.
+          </p>
+        </div>
       </div>
 
       <button class="btn btn-ghost btn-block" id="btn-reset-score">Reset score</button>

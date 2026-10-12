@@ -23,11 +23,13 @@ const DIFF_NOTES = {
   medium: 'Solid tactics — wins, blocks and threats.',
   hard: 'Tree search. Punishes loose play.',
   expert: 'Deep search + the solved opening book. Good luck.',
+  llm: 'Claude reads the board in words and reasons out a move. Needs the local dev server and your own API key.',
 };
+const LLM_DIFFICULTY = 'llm';
 // SVG radii for S/M/L in a 100×100 cell viewBox: [radius, strokeWidth] (0 = filled)
 const PIECE_GEOM = [[13, 0], [26, 9], [40, 10]];
 
-const LS = { settings: 'ttp-settings', scores: 'ttp-scores', theme: 'ttp-theme' };
+const LS = { settings: 'ttp-settings', scores: 'ttp-scores', theme: 'ttp-theme', apiKey: 'ttp-api-key' };
 
 // ── State ────────────────────────────────────────────────────────────────────
 let game = newGame();
@@ -380,6 +382,11 @@ function renderStatus() {
   const dot = $('status-dot');
   const txt = $('status-text');
   dot.className = 'status-dot';
+  if (blockedNote && !game.gameOver) {
+    dot.classList.add('draw');
+    txt.textContent = blockedNote;
+    return;
+  }
   if (game.gameOver) {
     if (game.winner === 0) {
       dot.classList.add('draw');
@@ -433,6 +440,8 @@ function renderControls() {
     b.setAttribute('aria-pressed', String(b.dataset.diff === settings.difficulty));
   $('field-side').style.display = isAiMode() ? '' : 'none';
   $('field-difficulty').style.display = isAiMode() ? '' : 'none';
+  $('keybox').hidden = !(isAiMode() && settings.difficulty === LLM_DIFFICULTY);
+  renderKeyState();
   $('btn-hint').style.display = isAiMode() ? '' : 'none';
   $('diff-note').textContent = DIFF_NOTES[settings.difficulty];
   updateActionButtons();
@@ -550,6 +559,13 @@ async function aiTurn() {
   renderStatus();
   renderTrays();
   updateActionButtons();
+  // The LLM tier goes over the network to the local dev server instead of the
+  // in-browser search worker, so it takes its own path — and gets no local
+  // fallback, since quietly substituting minimax would misrepresent it.
+  // Claims its own request id (askWorker does this for the other tiers), so
+  // the superseded-by-new-game check below actually compares like for like.
+  if (settings.difficulty === LLM_DIFFICULTY) return llmTurn(++reqId);
+
   const myReq = reqId + 1;   // askWorker increments reqId synchronously
   try {
     const [reply] = await Promise.all([
@@ -573,6 +589,44 @@ async function aiTurn() {
       render();
       updateActionButtons();
     }
+  }
+}
+
+/**
+ * LLM tier: POST the position to the local dev server, which holds the key and
+ * forwards it to Claude. Sends the browser-stored key when there is one, so the
+ * server can be started without ANTHROPIC_API_KEY in its environment.
+ */
+let blockedNote = '';   // standing status when a turn can no longer proceed
+
+async function llmTurn(myReq) {
+  blockedNote = '';
+  try {
+    const res = await fetch('/api/llm-move', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ state: snapshot(), effort: 'medium', apiKey: getApiKey() || undefined }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (myReq !== reqId) return;   // superseded by a new game
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    if (data.retried) console.warn('LLM needed a correction to find a legal move');
+    applyAiMove(data.move);
+    if (data.reasoning) toast(data.reasoning);
+  } catch (err) {
+    if (myReq !== reqId) return;
+    console.error('LLM move failed:', err);
+    aiBusy = false;
+    // The AI is still the player to move, so the board stays unplayable. A
+    // toast fades; leave a standing note in the status bar instead, naming the
+    // two ways out.
+    blockedNote = err.message.includes('Failed to fetch')
+      ? 'No local server — run node dev-server.mjs, then Undo'
+      : `LLM failed: ${err.message.slice(0, 60)} — Undo or change difficulty`;
+    toast(blockedNote);
+    autoSelectSize();
+    render();
+    updateActionButtons();
   }
 }
 
@@ -631,6 +685,7 @@ function showOverlay() {
 
 // ── Game lifecycle ───────────────────────────────────────────────────────────
 function startNewGame() {
+  blockedNote = '';
   abandonAiWork();           // invalidate + cancel any in-flight AI search
   aiBusy = false;
   hintBusy = false;
@@ -650,6 +705,7 @@ function startNewGame() {
 
 function undo() {
   if (aiBusy || game.history.length === 0) return;
+  blockedNote = '';
   if (isAiMode() && !game.history.some((m) => m.player === settings.side)) return;
   closeChooser();
   closeModal('overlay');
@@ -754,6 +810,36 @@ $('btn-reset-score').addEventListener('click', () => {
   toast('Score reset');
 });
 
+// ── API key (LLM tier, local dev server only) ────────────────────────────────
+// Kept in localStorage in the player's own browser and sent only to the local
+// dev server. The deployed site has no LLM tier and never sees it.
+const getApiKey = () => store.get(LS.apiKey, '') || '';
+
+function renderKeyState() {
+  const el = $('key-state');
+  if (!el) return;
+  const has = getApiKey().length > 0;
+  el.textContent = has ? 'key saved' : 'not set';
+  el.classList.toggle('ok', has);
+}
+
+$('btn-key-save').addEventListener('click', () => {
+  const field = $('api-key');
+  const key = field.value.trim();
+  if (!key) { toast('Paste a key first'); return; }
+  store.set(LS.apiKey, key);
+  field.value = '';
+  renderKeyState();
+  toast('Key saved in this browser');
+});
+
+$('btn-key-clear').addEventListener('click', () => {
+  store.set(LS.apiKey, '');
+  $('api-key').value = '';
+  renderKeyState();
+  toast('Key cleared');
+});
+
 $('btn-rules').addEventListener('click', () => { openModal('rules-overlay', '#btn-rules-close'); });
 $('btn-rules-close').addEventListener('click', () => { closeModal('rules-overlay'); });
 for (const ovId of ['overlay', 'rules-overlay']) {
@@ -809,7 +895,7 @@ applyTheme(store.get(LS.theme, null));
 settings = { ...settings, ...store.get(LS.settings, {}) };
 if (!['ai', '2p'].includes(settings.mode)) settings.mode = 'ai';
 if (![RED, BLUE].includes(settings.side)) settings.side = RED;
-if (!['easy', 'medium', 'hard', 'expert'].includes(settings.difficulty)) settings.difficulty = 'medium';
+if (!Object.hasOwn(DIFF_NOTES, settings.difficulty)) settings.difficulty = 'medium';
 scores = { ...scores, ...store.get(LS.scores, {}) };
 renderControls();
 startNewGame();
